@@ -191,7 +191,7 @@ def determine_majority_label(claim: Dict[str, Any], corpus_dict: Dict[str, Dict]
         return None
 
 def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> List[Dict[str, Any]]:
-    """Create search results for a claim using relevant doc_ids."""
+    """Create search results for a claim using only relevant doc_ids."""
     search_results = []
     
     # Get doc_ids from the claim
@@ -200,8 +200,8 @@ def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> Lis
     # Create a mapping from doc_id to corpus document
     corpus_dict = {str(doc['doc_id']): doc for doc in corpus_data}  # Use doc_id as key
     
-    # Get up to 5 documents based on doc_ids
-    for i, doc_id in enumerate(doc_ids[:5]):  # Take first 5 doc_ids
+    # Get documents based on doc_ids
+    for doc_id in doc_ids:  # Use all doc_ids
         doc_id_str = str(doc_id)  # Convert to string for consistency
         if doc_id_str in corpus_dict:
             doc = corpus_dict[doc_id_str]
@@ -216,30 +216,6 @@ def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> Lis
         else:
             # Fallback if doc_id not found in corpus
             page_name = f'Health Document {doc_id}'
-            page_result = 'Health-related content'
-        
-        search_result = {
-            "page_name": page_name,
-            "page_url": "",
-            "page_snippet": "",
-            "page_result": page_result,
-            "page_last_modified": ""
-        }
-        search_results.append(search_result)
-    
-    # If we have less than 5 doc_ids, fill with random docs to make 5 total
-    while len(search_results) < 5:
-        if corpus_data:
-            doc = random.choice(corpus_data)
-            # For random docs, use available title/abstract
-            page_name = doc.get('title', f'Health Document {len(search_results)+1}')
-            page_result = doc.get('abstract', ['Health-related content'])
-            if isinstance(page_result, list):
-                page_result = ' '.join(page_result)
-            else:
-                page_result = str(page_result) if page_result else 'Health-related content'
-        else:
-            page_name = f'Health Document {len(search_results)+1}'
             page_result = 'Health-related content'
         
         search_result = {
