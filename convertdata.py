@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import pandas as pd
 from typing import List, Dict, Any
 
 def extract_text_from_field(field_value):
@@ -42,7 +43,7 @@ def load_jsonl_file(filepath: str) -> List[Dict]:
 def load_json_file(filepath: str) -> Dict:
     """Load a JSON file safely."""
     if not os.path.exists(filepath):
-        print(f"File not found: {filepath}")cs
+        print(f"File not found: {filepath}")
         return {}
     
     try:
@@ -53,6 +54,41 @@ def load_json_file(filepath: str) -> Dict:
     except Exception as e:
         print(f"Error reading {filepath}: {e}")
         return {}
+
+def load_csv_files(healthver_dir: str) -> Dict[str, str]:
+    """Load CSV files and create a mapping from claim to question."""
+    csv_files = ['healthver_dev.csv', 'healthver_train.csv', 'healthver_test.csv']
+    claim_to_question = {}
+    
+    print("\n=== Loading CSV Files ===")
+    for filename in csv_files:
+        filepath = os.path.join(healthver_dir, filename)
+        if os.path.exists(filepath):
+            try:
+                df = pd.read_csv(filepath, encoding='utf-8')
+                print(f"Loaded {len(df)} rows from {filename}")
+                
+                # Debug: Print column names
+                print(f"Columns in {filename}: {list(df.columns)}")
+                
+                # Create mapping from claim to question
+                if 'claim' in df.columns and 'question' in df.columns:
+                    for _, row in df.iterrows():
+                        claim = str(row['claim']).strip()
+                        question = str(row['question']).strip()
+                        if claim and question and question != 'nan':
+                            claim_to_question[claim] = question
+                    print(f"Added {len(claim_to_question)} claim-question mappings from {filename}")
+                else:
+                    print(f"Warning: Missing 'claim' or 'question' columns in {filename}")
+                    
+            except Exception as e:
+                print(f"Error reading {filepath}: {e}")
+        else:
+            print(f"CSV file not found: {filepath}")
+    
+    print(f"Total unique claim-question mappings: {len(claim_to_question)}")
+    return claim_to_question
 
 def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> List[Dict[str, Any]]:
     """Create search results for a claim using relevant doc_ids."""
@@ -84,8 +120,8 @@ def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> Lis
         
         search_result = {
             "page_name": page_name,
-            "page_url": "",  # Empty as requested
-            "page_snippet": "",  # Empty as requested (rỗng)
+            "page_url": "",
+            "page_snippet": "",
             "page_result": page_result,
             "page_last_modified": ""
         }
@@ -109,7 +145,7 @@ def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> Lis
         search_result = {
             "page_name": page_name,
             "page_url": "",
-            "page_snippet": "",  # Empty (rỗng)
+            "page_snippet": "",
             "page_result": page_result,
             "page_last_modified": ""
         }
@@ -121,6 +157,9 @@ def convert_healthver_to_mcqa(healthver_dir: str, output_file: str):
     """Convert HealthVer dataset to MCQA format."""
     
     print(f"Looking for HealthVer files in: {healthver_dir}")
+    
+    # Load CSV files first to get claim-question mappings
+    claim_to_question = load_csv_files(healthver_dir)
     
     # Load all claims files
     all_claims = []
@@ -187,6 +226,9 @@ def convert_healthver_to_mcqa(healthver_dir: str, output_file: str):
     print(f"Calibration samples: {calibration_samples}")
     print(f"Test samples: {total_samples - calibration_samples}")
     
+    # Track question source statistics
+    question_sources = {"from_csv": 0, "generated": 0}
+    
     # Process claims
     for i, claim in enumerate(all_claims):
         if i % 1000 == 0:
@@ -203,8 +245,16 @@ def convert_healthver_to_mcqa(healthver_dir: str, output_file: str):
         elif label.upper() == 'NEI':
             correct_answer = "C"
         
-        # Create question
-        question = f"Is the following health claim supported by evidence: {claim_text}\nA. Supported\nB. Refuted\nC. Not Enough Information"
+        # Get question from CSV mapping or generate default
+        question_text = claim_to_question.get(claim_text.strip())
+        if question_text:
+            # Use question from CSV and add options
+            question = f"{question_text}\nA. Supported\nB. Refuted\nC. Not Enough Information"
+            question_sources["from_csv"] += 1
+        else:
+            # Generate default question
+            question = f"Is the following health claim supported by evidence: {claim_text}\nA. Supported\nB. Refuted\nC. Not Enough Information"
+            question_sources["generated"] += 1
         
         # Create search results
         search_results = create_search_results(claim, corpus_data)
@@ -235,6 +285,11 @@ def convert_healthver_to_mcqa(healthver_dir: str, output_file: str):
     print(f"✓ Test: {len(mcqa_data['test'])} samples")
     print(f"✓ Output saved to: {output_file}")
     
+    # Print question source statistics
+    print(f"\n=== Question Source Statistics ===")
+    print(f"Questions from CSV: {question_sources['from_csv']} ({question_sources['from_csv']/total_samples*100:.1f}%)")
+    print(f"Generated questions: {question_sources['generated']} ({question_sources['generated']/total_samples*100:.1f}%)")
+    
     # Print some statistics about labels
     label_counts = {}
     for claim in all_claims:
@@ -260,7 +315,7 @@ def main():
     # List files in directory
     print("Files in directory:")
     for file in os.listdir(healthver_directory):
-        if file.endswith(('.json', '.jsonl')):
+        if file.endswith(('.json', '.jsonl', '.csv')):
             filepath = os.path.join(healthver_directory, file)
             size = os.path.getsize(filepath)
             print(f" {file} ({size:,} bytes)")
