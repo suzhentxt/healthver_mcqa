@@ -4,6 +4,14 @@ import random
 import pandas as pd
 from typing import List, Dict, Any
 from collections import Counter
+from newspaper import Article
+import requests
+from tqdm import tqdm  # For progress bar
+import time  # For rate limiting
+from dotenv import load_dotenv  # Thêm thư viện python-dotenv
+
+# Tải biến môi trường từ tệp .env
+load_dotenv()
 
 def extract_text_from_field(field_value):
     """Extract text from field that could be string, list, or dict."""
@@ -190,9 +198,69 @@ def determine_majority_label(claim: Dict[str, Any], corpus_dict: Dict[str, Dict]
         print(f"Warning: Invalid label '{label}' for claim id {claim.get('id', 'unknown')}")
         return None
 
-def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> List[Dict[str, Any]]:
-    """Create search results for a claim using only relevant doc_ids."""
+def search_article_url(title: str, api_key: str, cx: str) -> str:
+    """Search for article URL based on title using Google Custom Search JSON API."""
+    if not api_key or not cx:
+        print(f"Warning: Missing API key or CX for title '{title}'. Returning empty URL.")
+        return ""
+    
+    try:
+        search_url = "https://www.googleapis.com/customsearch/v1"
+        params = {
+            "key": api_key,
+            "cx": cx,
+            "q": title + " site:pubmed.ncbi.nlm.nih.gov OR site:sciencedirect.com OR site:nature.com OR site:elsevier.com OR site:nih.gov",
+            "num": 1,
+            "filter": "1"  # Tự động lọc trùng lặp
+        }
+        response = requests.get(search_url, params=params)
+        response.raise_for_status()
+        results = response.json().get("items", [])
+        if results:
+            return results[0]["link"]
+        else:
+            print(f"No search results found for title: {title}")
+            return ""
+    except Exception as e:
+        print(f"Error searching for title '{title}': {e}")
+        return ""
+
+def scrape_article_text(url: str) -> str:
+    """Scrape full text of an article from a URL using newspaper3k."""
+    if not url:
+        return "No URL provided"
+    
+    try:
+        article = Article(url)
+        article.download()
+        article.parse()
+        full_text = article.text
+        if full_text:
+            return full_text[:5000]  # Giới hạn 5000 ký tự để tránh đầu ra quá lớn
+        else:
+            return "No content extracted"
+    except Exception as e:
+        print(f"Error scraping URL {url}: {e}")
+        return "No content extracted"
+
+def load_cache(cache_file: str) -> Dict[str, Dict[str, str]]:
+    """Load cached URLs and full texts from a JSON file."""
+    if os.path.exists(cache_file):
+        with open(cache_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def save_cache(cache_file: str, cache: Dict[str, Dict[str, str]]):
+    """Save cached URLs and full texts to a JSON file."""
+    with open(cache_file, 'w', encoding='utf-8') as f:
+        json.dump(cache, f, indent=4, ensure_ascii=False)
+
+def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict], api_key: str, cx: str, cache_file: str = "scraped_cache.json") -> List[Dict[str, Any]]:
+    """Create search results for a claim using relevant doc_ids, scraping full text for page_result with caching."""
     search_results = []
+    
+    # Load cache
+    cache = load_cache(cache_file)
     
     # Get doc_ids from the claim
     doc_ids = claim.get('doc_ids', [])
@@ -200,8 +268,8 @@ def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> Lis
     # Create a mapping from doc_id to corpus document
     corpus_dict = {str(doc['doc_id']): doc for doc in corpus_data}  # Use doc_id as key
     
-    # Get documents based on doc_ids
-    for doc_id in doc_ids:  # Use all doc_ids
+    # Process each doc_id with progress bar
+    for doc_id in tqdm(doc_ids, desc="Processing doc_ids", unit="doc"):
         doc_id_str = str(doc_id)  # Convert to string for consistency
         if doc_id_str in corpus_dict:
             doc = corpus_dict[doc_id_str]
@@ -213,23 +281,44 @@ def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> Lis
                 page_snippet = ' '.join(page_snippet)  # Join sentences into a single string
             else:
                 page_snippet = str(page_snippet) if page_snippet else 'Health-related content'
+            # page_url = url from corpus or search based on title
+            page_url = doc.get('url', '')
         else:
             # Fallback if doc_id not found in corpus
             page_name = f'Health Document {doc_id}'
             page_snippet = 'Health-related content'
+            page_url = ''
+        
+        # Use cache or search/scrape
+        if page_name in cache:
+            print(f"Using cached data for title: {page_name}")
+            page_url = cache[page_name]['url']
+            page_result = cache[page_name]['full_text']
+        else:
+            if not page_url:
+                page_url = search_article_url(page_name, api_key, cx)
+            
+            page_result = scrape_article_text(page_url)
+            
+            # Save to cache
+            cache[page_name] = {'url': page_url, 'full_text': page_result}
+            save_cache(cache_file, cache)
+            
+            # Rate limiting to avoid API limits
+            time.sleep(1)  # Wait 1 second between requests
         
         search_result = {
             "page_name": page_name,
-            "page_url": "",
+            "page_url": page_url,
             "page_snippet": page_snippet,
-            "page_result": "",
+            "page_result": page_result,
             "page_last_modified": ""
         }
         search_results.append(search_result)
     
     return search_results
 
-def convert_healthver_to_mcqa(healthver_dir: str, output_file: str):
+def convert_healthver_to_mcqa(healthver_dir: str, output_file: str, api_key: str = None, cx: str = None):
     """Convert HealthVer dataset to MCQA format."""
     
     print(f"Looking for HealthVer files in: {healthver_dir}")
@@ -343,7 +432,7 @@ def convert_healthver_to_mcqa(healthver_dir: str, output_file: str):
             question_sources["generated"] += 1
         
         # Create search results
-        search_results = create_search_results(claim, corpus_data)
+        search_results = create_search_results(claim, corpus_data, api_key, cx)
         
         # Create sample with unique ID
         sample = {
@@ -426,6 +515,18 @@ def main():
     healthver_directory = "./healthver"
     output_file = "healthver_mcqa.json"
     
+    # Lấy API key và CX từ tệp .env
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    google_cx = os.getenv("GOOGLE_CX")
+    
+    # Kiểm tra xem API key và CX có tồn tại không
+    if not google_api_key or not google_cx:
+        print("Error: GOOGLE_API_KEY or GOOGLE_CX not found in .env file.")
+        print("Please set these variables in a .env file with the following format:")
+        print("GOOGLE_API_KEY=your_api_key_here")
+        print("GOOGLE_CX=your_search_engine_id_here")
+        return
+    
     # Check if directory exists
     if not os.path.exists(healthver_directory):
         print(f"Directory not found: {healthver_directory}")
@@ -441,7 +542,7 @@ def main():
             print(f" {file} ({size:,} bytes)")
     
     # Convert dataset
-    convert_healthver_to_mcqa(healthver_directory, output_file)
+    convert_healthver_to_mcqa(healthver_directory, output_file, google_api_key, google_cx)
 
 if __name__ == "__main__":
     main()
