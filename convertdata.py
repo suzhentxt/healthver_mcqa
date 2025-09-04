@@ -207,22 +207,22 @@ def create_search_results(claim: Dict[str, Any], corpus_data: List[Dict]) -> Lis
             doc = corpus_dict[doc_id_str]
             # page_name = title from corpus
             page_name = doc.get('title', f'Health Document {doc_id}')
-            # page_result = abstract from corpus
-            page_result = doc.get('abstract', ['Health-related content'])
-            if isinstance(page_result, list):
-                page_result = ' '.join(page_result)  # Join sentences into a single string
+            # page_snippet = abstract from corpus
+            page_snippet = doc.get('abstract', ['Health-related content'])
+            if isinstance(page_snippet, list):
+                page_snippet = ' '.join(page_snippet)  # Join sentences into a single string
             else:
-                page_result = str(page_result) if page_result else 'Health-related content'
+                page_snippet = str(page_snippet) if page_snippet else 'Health-related content'
         else:
             # Fallback if doc_id not found in corpus
             page_name = f'Health Document {doc_id}'
-            page_result = 'Health-related content'
+            page_snippet = 'Health-related content'
         
         search_result = {
             "page_name": page_name,
             "page_url": "",
-            "page_snippet": "",
-            "page_result": page_result,
+            "page_snippet": page_snippet,
+            "page_result": "",
             "page_last_modified": ""
         }
         search_results.append(search_result)
